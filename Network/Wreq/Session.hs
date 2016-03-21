@@ -44,6 +44,7 @@ module Network.Wreq.Session
     (
     -- * Session creation
       Session
+    , seshManager
     , withSession
     , withAPISession
     -- ** More control-oriented session creation
