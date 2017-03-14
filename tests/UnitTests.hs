@@ -5,21 +5,22 @@
 
 module UnitTests (testWith) where
 
+import Control.Arrow (first)
 import Control.Applicative ((<$>))
 import Control.Concurrent (forkIO, killThread)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
-import Control.Exception (Exception, toException)
-import Control.Lens ((^.), (^?), (.~), (?~), (&))
+import Control.Exception (Exception, throwIO)
+import Control.Lens ((^.), (^?), (.~), (?~), (&), iso, ix, Traversal')
 import Control.Monad (unless, void)
 import Data.Aeson
-import Data.Aeson.Lens (key)
+import Data.Aeson.Lens (key, AsValue, _Object)
 import Data.ByteString (ByteString)
 import Data.Char (toUpper)
 import Data.Maybe (isJust)
 import Data.Monoid ((<>))
 import HttpBin.Server (serve)
-import Network.HTTP.Client (HttpException(..))
-import Network.HTTP.Types.Status (Status(Status), status200, status401)
+import Network.HTTP.Client (HttpException(..), HttpExceptionContent(..))
+import Network.HTTP.Types.Status (status200, status401)
 import Network.HTTP.Types.Version (http11)
 import Network.Wreq hiding
   (get, post, head_, put, options, delete,
@@ -33,6 +34,8 @@ import Test.Framework (Test, defaultMain, testGroup)
 import Test.Framework.Providers.HUnit (testCase)
 import Test.HUnit (assertBool, assertEqual, assertFailure)
 import qualified Control.Exception as E
+import qualified Data.CaseInsensitive as CI
+import qualified Data.HashMap.Strict as HMap
 import qualified Data.Text as T
 import qualified Network.Wreq.Session as Session
 import qualified Data.ByteString.Lazy as L
@@ -41,13 +44,13 @@ import qualified Network.Wreq as Wreq
 data Verb = Verb {
     get :: String -> IO (Response L.ByteString)
   , getWith :: Options -> String -> IO (Response L.ByteString)
-  , post :: Postable a => String -> a -> IO (Response L.ByteString)
-  , postWith :: Postable a => Options -> String -> a
+  , post :: forall a. Postable a => String -> a -> IO (Response L.ByteString)
+  , postWith :: forall a. Postable a => Options -> String -> a
              -> IO (Response L.ByteString)
   , head_ :: String -> IO (Response ())
   , headWith :: Options -> String -> IO (Response ())
-  , put :: Putable a => String -> a -> IO (Response L.ByteString)
-  , putWith :: Putable a => Options -> String -> a -> IO (Response L.ByteString)
+  , put :: forall a. Putable a => String -> a -> IO (Response L.ByteString)
+  , putWith :: forall a. Putable a => Options -> String -> a -> IO (Response L.ByteString)
   , options :: String -> IO (Response ())
   , optionsWith :: Options -> String -> IO (Response ())
   , delete :: String -> IO (Response L.ByteString)
@@ -76,10 +79,20 @@ session s = Verb { get = Session.get s
                  , delete = Session.delete s
                  , deleteWith = flip Session.deleteWith s }
 
+-- Helper aeson lens for case insensitive keys
+-- The test 'snap' server unfortunately lowercases all headers, we have to be case-insensitive
+-- when checking the returned header list.
+cikey :: AsValue t => T.Text -> Traversal' t Value
+cikey i = _Object . toInsensitive . ix (CI.mk i)
+  where
+    toInsensitive = iso toCi fromCi
+    toCi = HMap.fromList . map (first CI.mk) . HMap.toList
+    fromCi = HMap.fromList . map (first CI.original) . HMap.toList
+
 basicGet Verb{..} site = do
   r <- get (site "/get")
   assertBool "GET request has User-Agent header" $
-    isJust (r ^. responseBody ^? key "headers" . key "User-Agent")
+    isJust (r ^. responseBody ^? key "headers" . cikey "User-Agent")
   -- test the various lenses
   assertEqual "GET succeeds" status200 (r ^. responseStatus)
   assertEqual "GET succeeds 200" 200 (r ^. responseStatus . statusCode)
@@ -96,7 +109,7 @@ basicPost Verb{..} site = do
   assertEqual "POST succeeds" status200 (r ^. responseStatus)
   assertEqual "POST echoes input" (Just "wibble") (body ^? key "data")
   assertEqual "POST is binary" (Just "application/octet-stream")
-                               (body ^? key "headers" . key "Content-Type")
+                               (body ^? key "headers" . cikey "Content-Type")
 
 multipartPost Verb{..} site =
   withSystemTempFile "foo.html" $ \name handle -> do
@@ -139,14 +152,14 @@ jsonPut Verb{..} site = do
   r <- put (site "/put") $ toJSON solrAdd
   assertEqual "toJSON PUT request has correct Content-Type header"
     (Just "application/json")
-    (r ^. responseBody ^? key "headers" . key "Content-Type")
+    (r ^. responseBody ^? key "headers" . cikey "Content-Type")
 
 byteStringPut Verb{..} site = do
   let opts = defaults & header "Content-Type" .~ ["application/json"]
   r <- putWith opts (site "/put") $ encode solrAdd
   assertEqual "ByteString PUT request has correct Content-Type header"
     (Just "application/json")
-    (r ^. responseBody ^? key "headers" . key "Content-Type")
+    (r ^. responseBody ^? key "headers" . cikey "Content-Type")
 
 basicDelete Verb{..} site = do
   r <- delete (site "/delete")
@@ -155,18 +168,21 @@ basicDelete Verb{..} site = do
 throwsStatusCode Verb{..} site =
     assertThrows "404 causes exception to be thrown" inspect $
     head_ (site "/status/404")
-  where inspect e = case e of
-                      StatusCodeException _ _ _ -> return ()
+  where inspect (HttpExceptionRequest _ e) = case e of
+                      StatusCodeException _ _ -> return ()
                       _ -> assertFailure "unexpected exception thrown"
+        inspect _ = assertFailure "unexpected exception thrown"
 
 getBasicAuth Verb{..} site = do
   let opts = defaults & auth ?~ basicAuth "user" "passwd"
   r <- getWith opts (site "/basic-auth/user/passwd")
   assertEqual "basic auth GET succeeds" status200 (r ^. responseStatus)
-  let inspect e = case e of
-                    StatusCodeException status _ _ ->
+  let inspect (HttpExceptionRequest _ e) = case e of
+                    StatusCodeException resp _ ->
                       assertEqual "basic auth failed GET gives 401"
-                        status401 status
+                        status401 (resp ^. responseStatus)
+      inspect _ = assertFailure "unexpected exception thrown"
+
   assertThrows "basic auth GET fails if password is bad" inspect $
     getWith opts (site "/basic-auth/user/asswd")
 
@@ -175,10 +191,11 @@ getOAuth2 Verb{..} kind ctor site = do
   r <- getWith opts (site $ "/oauth2/" <> kind <> "/token1234")
   assertEqual ("oauth2 " <> kind <> " GET succeeds")
     status200 (r ^. responseStatus)
-  let inspect e = case e of
-                    StatusCodeException status _ _ ->
+  let inspect (HttpExceptionRequest _ e) = case e of
+                    StatusCodeException resp _ ->
                       assertEqual ("oauth2 " <> kind <> " failed GET gives 401")
-                        status401 status
+                        status401 (resp ^. responseStatus)
+      inspect _ = assertFailure "unexpected exception thrown"
   assertThrows ("oauth2 " <> kind <> " GET fails if token is bad") inspect $
     getWith opts (site $ "/oauth2/" <> kind <> "/token123")
 
@@ -209,10 +226,10 @@ getHeaders Verb{..} site = do
   r <- getWith opts (site "/get")
   assertEqual "extra header set correctly"
     (Just "bar")
-    (r ^. responseBody ^? key "headers" . key "X-Wibble")
+    (r ^. responseBody ^? key "headers" . cikey "X-Wibble")
 
 getCheckStatus Verb {..} site = do
-  let opts = defaults & checkStatus .~ (Just customCs)
+  let opts = defaults & checkResponse .~ Just customRc
   r <- getWith opts (site "/status/404")
   assertThrows "Non 404 throws error" inspect $
     getWith opts (site "/get")
@@ -220,36 +237,43 @@ getCheckStatus Verb {..} site = do
     404
     (r ^. responseStatus . statusCode)
   where
-    customCs (Status 404 _) _ _ = Nothing
-    customCs s h cj             = Just . toException . StatusCodeException s h $ cj
+    customRc :: ResponseChecker
+    customRc _ resp
+        | resp ^. responseStatus . statusCode == 404 = return ()
+    customRc req resp = throwIO $ HttpExceptionRequest req (StatusCodeException (void resp) "")
 
-    inspect e = case e of
-      (StatusCodeException (Status sc _) _ _) ->
-        assertEqual "200 Status Error" sc 200
+    inspect (HttpExceptionRequest _ e) = case e of
+        (StatusCodeException resp _) ->
+            assertEqual "200 Status Error" (resp ^. responseStatus) status200
+    inspect _ = assertFailure "unexpected exception thrown"
+
 
 getGzip Verb{..} site = do
   r <- get (site "/gzip")
   assertEqual "gzip decoded for us" (Just (Bool True))
     (r ^. responseBody ^? key "gzipped")
 
-headRedirect Verb{..} site =
+headRedirect Verb{..} site = do
   assertThrows "HEAD of redirect throws exception" inspect $
     head_ (site "/redirect/3")
-  where inspect e = case e of
-                      StatusCodeException status _ _ ->
-                        let code = status ^. statusCode
+  where inspect (HttpExceptionRequest _ e) = case e of
+                      StatusCodeException resp _ ->
+                        let code = resp ^. responseStatus . statusCode
                         in assertBool "code is redirect"
                            (code >= 300 && code < 400)
+        inspect _ = assertFailure "unexpected exception thrown"
+
 
 redirectOverflow Verb{..} site =
   assertThrows "GET with too many redirects throws exception" inspect $
     getWith (defaults & redirects .~ 3) (site "/redirect/5")
-  where inspect e = case e of TooManyRedirects _ -> return ()
+  where inspect (HttpExceptionRequest _ e) = case e of TooManyRedirects _ -> return ()
+        inspect _ = assertFailure "unexpected exception thrown"
 
 invalidURL Verb{..} _site = do
   let noProto (InvalidUrlException _ _) = return ()
   assertThrows "exception if no protocol" noProto (get "wheeee")
-  let noHost (InvalidDestinationHost _) = return ()
+  let noHost (HttpExceptionRequest _ (InvalidDestinationHost _)) = return ()
   assertThrows "exception if no host" noHost (get "http://")
 
 funkyScheme Verb{..} site = do

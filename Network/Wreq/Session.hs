@@ -57,6 +57,7 @@ module Network.Wreq.Session
     , options
     , put
     , delete
+    , customMethod
     -- ** Configurable verbs
     , getWith
     , postWith
@@ -64,6 +65,7 @@ module Network.Wreq.Session
     , optionsWith
     , putWith
     , deleteWith
+    , customMethodWith
     -- * Extending a session
     , Lens.seshRun
     ) where
@@ -76,9 +78,11 @@ import Network.Wreq.Internal
 import Network.Wreq.Internal.Types (Body(..), Req(..), Session(..))
 import Network.Wreq.Types (Postable, Putable, Run)
 import Prelude hiding (head)
+import qualified Data.ByteString.Char8 as BC8
 import qualified Data.ByteString.Lazy as L
 import qualified Network.HTTP.Client as HTTP
 import qualified Network.Wreq.Internal.Lens as Lens
+import qualified Network.Wreq.Lens as Lens
 
 -- | Create a 'Session', passing it to the given function.  The
 -- 'Session' will no longer be valid after that function returns.
@@ -110,11 +114,11 @@ withSessionControl :: Maybe HTTP.CookieJar
                -> (Session -> IO a) -> IO a
 withSessionControl mj settings act = do
   mref <- maybe (return Nothing) (fmap Just . newIORef) mj
-  HTTP.withManager settings $ \mgr ->
-    act Session { seshCookies = mref
-                , seshManager = mgr
-                , seshRun = runWith
-                }
+  mgr <- HTTP.newManager settings
+  act Session { seshCookies = mref
+              , seshManager = mgr
+              , seshRun = runWith
+              }
 
 -- | 'Session'-specific version of 'Network.Wreq.get'.
 get :: Session -> String -> IO (Response L.ByteString)
@@ -126,7 +130,7 @@ post = postWith defaults
 
 -- | 'Session'-specific version of 'Network.Wreq.head_'.
 head_ :: Session -> String -> IO (Response ())
-head_ = headWith defaults
+head_ = headWith (defaults & Lens.redirects .~ 0)
 
 -- | 'Session'-specific version of 'Network.Wreq.options'.
 options :: Session -> String -> IO (Response ())
@@ -139,6 +143,10 @@ put = putWith defaults
 -- | 'Session'-specific version of 'Network.Wreq.delete'.
 delete :: Session -> String -> IO (Response L.ByteString)
 delete = deleteWith defaults
+
+-- | 'Session'-specific version of 'Network.Wreq.customMethod'.
+customMethod :: String -> Session -> String -> IO (Response L.ByteString)
+customMethod = flip customMethodWith defaults
 
 -- | 'Session'-specific version of 'Network.Wreq.getWith'.
 getWith :: Options -> Session -> String -> IO (Response L.ByteString)
@@ -166,6 +174,12 @@ putWith opts sesh url payload = run string sesh =<< preparePut opts url payload
 -- | 'Session'-specific version of 'Network.Wreq.deleteWith'.
 deleteWith :: Options -> Session -> String -> IO (Response L.ByteString)
 deleteWith opts sesh url = run string sesh =<< prepareDelete opts url
+
+-- | 'Session'-specific version of 'Network.Wreq.customMethodWith'.
+customMethodWith :: String -> Options -> Session -> String -> IO (Response L.ByteString)
+customMethodWith method opts sesh url = run string sesh =<< prepareMethod methodBS opts url
+  where
+    methodBS = BC8.pack method
 
 runWith :: Session -> Run Body -> Run Body
 runWith Session{..} act (Req _ req) = do

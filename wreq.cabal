@@ -1,5 +1,5 @@
 name:                wreq
-version:             0.4.1.0
+version:             0.5.0.0
 synopsis:            An easy-to-use HTTP client library.
 description:
   .
@@ -97,7 +97,7 @@ library
     psqueues >= 0.2,
     aeson >= 0.7.0.3,
     attoparsec >= 0.11.1.0,
-    authenticate-oauth == 1.5.*,
+    authenticate-oauth >= 1.5,
     base >= 4.5 && < 5,
     base16-bytestring,
     byteable,
@@ -108,8 +108,8 @@ library
     exceptions >= 0.5,
     ghc-prim,
     hashable,
-    http-client >= 0.4.6,
-    http-client-tls >= 0.2,
+    http-client >= 0.5.3.2,
+    http-client-tls >= 0.3.3,
     http-types >= 0.8,
     lens >= 4.5,
     lens-aeson,
@@ -135,13 +135,13 @@ executable httpbin
   else
     build-depends:
       aeson >= 0.7,
-      aeson-pretty >= 0.7.1,
+      aeson-pretty >= 0.8.0,
       base >= 4.5 && < 5,
       base64-bytestring,
       bytestring,
       case-insensitive,
       containers,
-      snap-core,
+      snap-core >= 1.0.0.0,
       snap-server >= 0.9.4.4,
       text,
       time,
@@ -160,6 +160,7 @@ test-suite tests
   other-modules:
     Properties.Store
     UnitTests
+    HttpBin.Server
 
   if flag(aws)
     cpp-options: -DAWS_TESTS
@@ -178,7 +179,7 @@ test-suite tests
     HUnit,
     QuickCheck >= 2.7,
     aeson,
-    aeson-pretty >= 0.7.1,
+    aeson-pretty >= 0.8.0,
     base >= 4.5 && < 5,
     base64-bytestring,
     bytestring,
@@ -190,7 +191,7 @@ test-suite tests
     lens,
     lens-aeson,
     network-info,
-    snap-core,
+    snap-core >= 1.0.0.0,
     snap-server >= 0.9.4.4,
     temporary,
     test-framework,
@@ -199,6 +200,7 @@ test-suite tests
     text,
     time,
     transformers,
+    unordered-containers,
     unix-compat,
     uuid,
     vector,
