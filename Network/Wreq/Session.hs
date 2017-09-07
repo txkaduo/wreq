@@ -66,6 +66,7 @@ module Network.Wreq.Session
     , putWith
     , deleteWith
     , customMethodWith
+    , customPayloadMethodWith
     -- * Extending a session
     , Lens.seshRun
     ) where
@@ -178,6 +179,14 @@ deleteWith opts sesh url = run string sesh =<< prepareDelete opts url
 -- | 'Session'-specific version of 'Network.Wreq.customMethodWith'.
 customMethodWith :: String -> Options -> Session -> String -> IO (Response L.ByteString)
 customMethodWith method opts sesh url = run string sesh =<< prepareMethod methodBS opts url
+  where
+    methodBS = BC8.pack method
+
+-- | 'Session'-specific version of 'Network.Wreq.customPayloadMethodWith'.
+customPayloadMethodWith :: Postable a => String -> Options -> Session -> String -> a
+                        -> IO (Response L.ByteString)
+customPayloadMethodWith method opts sesh url payload =
+  run string sesh =<< preparePayloadMethod methodBS opts url payload
   where
     methodBS = BC8.pack method
 
